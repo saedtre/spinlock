@@ -7,12 +7,15 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use super::{Example, ExampleOutput};
+use super::viz::human;
+use super::{Example, ExampleOutput, LaneState, VizSpec};
 use crate::SpinLock;
 
 /// The holder sleeps while holding the lock; two contenders spin behind it.
+///
+/// The run reports how long each contender spent busy-waiting.
 pub struct HeldAcrossSyscallExample;
 
 impl Example for HeldAcrossSyscallExample {
@@ -25,13 +28,15 @@ impl Example for HeldAcrossSyscallExample {
     }
 
     fn explanation(&self) -> &'static str {
-        "The required 'when NOT' exhibit. Holding any lock across a blocking \
+        "This is the one to avoid. Holding any lock across a blocking \
          operation is bad, but with a spinlock it is actively harmful: every \
          contender can only busy-wait, so for the whole (multi-ms) hold they \
          burn 100% of a core each with nothing to do — a livelock risk on a \
          small machine. If your critical section must block (syscall, I/O, \
          wait), use a sleeping Mutex: contenders park and cost the CPU \
-         nothing. Rule of thumb: a spinlock's section must never block."
+         nothing. Rule of thumb: a spinlock's section must never block. \
+         (Separately: this lock does not poison — a panic in the section \
+         releases the lock, but leaves the data as it was mid-update.)"
     }
 
     fn code(&self) -> &'static str {
@@ -45,54 +50,85 @@ impl Example for HeldAcrossSyscallExample {
     fn run(&mut self, out: &mut ExampleOutput) -> bool {
         const HOLDS: usize = 5;
         const SLEEP_MS: u64 = 20;
+        const CONTENDERS: usize = 2;
         const CONTENTION_OPS: usize = 3;
+        const HOLDER: usize = 0; // lane 0; contenders are lanes 1..=CONTENDERS
 
         // Working state, reset on every run.
-        let flag = Arc::new(SpinLock::new(0u32));
-        let released = Arc::new(AtomicBool::new(false));
+        let value = Arc::new(SpinLock::new(0u32));
+        let holding = Arc::new(AtomicBool::new(false));
+        let held_ns = Arc::new(AtomicU64::new(0));
         let cancel = out.cancel().clone();
+        let mut lanes = vec![("holder".to_string(), 1)];
+        lanes.extend(
+            (1..=CONTENDERS).map(|c| (format!("contender {c}"), 1 + CONTENTION_OPS as u64)),
+        );
+        let viz = out.visualise(VizSpec {
+            lock: "value lock",
+            data: "value",
+            capacity: None,
+            unit: "increments",
+            target: (1 + CONTENDERS * (1 + CONTENTION_OPS)) as u64,
+            lanes,
+        });
 
         out.line(format!(
             "the holder will sleep {SLEEP_MS}ms {HOLDS} times WHILE holding the lock"
         ));
-        out.line("two contenders spin behind it; each then does a few trivial ops");
+        out.line("two contenders each want the lock for one increment; they can only spin");
+        if viz.paced() {
+            out.line("(this paced run stretches each of those sleeps so the spinning can be watched)");
+        }
 
         // Phase 1 — the bad habit: hold the lock across a blocking op (a
-        // syscall stand-in). The contenders spin for the entire hold.
-        let mut spins_seen = Vec::new();
+        // syscall stand-in). Each contender calls lock() once, while the
+        // holder has it, and busy-waits for the whole hold.
         thread::scope(|s| {
             {
-                let flag = Arc::clone(&flag);
-                let released = Arc::clone(&released);
+                let value = Arc::clone(&value);
+                let holding = Arc::clone(&holding);
+                let held_ns = Arc::clone(&held_ns);
                 let cancel = Arc::clone(&cancel);
+                let viz = viz.clone();
                 s.spawn(move || {
-                    let mut g = flag.lock();
-                    *g = 1;
+                    let mut g = viz.lock(HOLDER, &value);
+                    let started = Instant::now();
+                    holding.store(true, Ordering::Release);
                     for _ in 0..HOLDS {
+                        // The blocking operation, inside the critical
+                        // section. (A paced run stretches it so the spinning
+                        // contenders can be watched.)
                         thread::sleep(Duration::from_millis(SLEEP_MS));
+                        viz.pause(40);
                         if cancel.load(Ordering::Relaxed) {
                             break;
                         }
                     }
-                    *g = 2;
-                    released.store(true, Ordering::Release); // g drops here
+                    *g += 1;
+                    viz.level(u64::from(*g));
+                    viz.fed(1);
+                    held_ns.store(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    drop(g); // only now can the contenders get in
+                    viz.set_state(HOLDER, LaneState::Done);
                 });
             }
-            for _ in 0..2 {
-                let flag = Arc::clone(&flag);
-                let released = Arc::clone(&released);
-                let cancel = Arc::clone(&cancel);
-                let spins = Arc::new(AtomicU64::new(0));
-                let spins_out = Arc::clone(&spins);
+            for c in 0..CONTENDERS {
+                let value = Arc::clone(&value);
+                let holding = Arc::clone(&holding);
+                let viz = viz.clone();
                 s.spawn(move || {
-                    // While the holder sleeps, lock() spins here: burning a
-                    // core just to do a single increment.
-                    while !released.load(Ordering::Acquire) && !cancel.load(Ordering::Relaxed) {
-                        *flag.lock() += 1;
-                        spins.fetch_add(1, Ordering::Relaxed);
+                    // Wait until the holder really has the lock, so this is
+                    // a contended acquisition every time.
+                    while !holding.load(Ordering::Acquire) {
+                        thread::yield_now();
                     }
+                    // lock() spins here for as long as the holder sleeps:
+                    // a whole core burned to do a single increment.
+                    let mut g = viz.lock(c + 1, &value);
+                    *g += 1;
+                    viz.level(u64::from(*g));
+                    viz.fed(1);
                 });
-                spins_seen.push(Arc::clone(&spins_out));
             }
         });
 
@@ -101,25 +137,42 @@ impl Example for HeldAcrossSyscallExample {
             return false;
         }
 
+        let held = Duration::from_nanos(held_ns.load(Ordering::Relaxed));
+        let waits: Vec<Duration> = viz.snapshot().lanes[1..].iter().map(|l| l.spun).collect();
+        for (c, wait) in waits.iter().enumerate() {
+            out.line(format!(
+                "contender {} busy-waited {} to do one increment",
+                c + 1,
+                human(*wait)
+            ));
+        }
+        out.line(format!(
+            "the holder held the lock for {}; the contenders burned {} of CPU spinning meanwhile",
+            human(held),
+            human(waits.iter().sum())
+        ));
+
         // Phase 2 — after the release, each contender does a few trivial ops
-        // under the now-free lock. These are the counted "serviced" ops.
-        let mut serviced = Vec::new();
+        // under the now-free lock: the same work, with nothing to wait for.
         thread::scope(|s| {
-            for _ in 0..2 {
-                let flag = Arc::clone(&flag);
+            for c in 0..CONTENDERS {
+                let value = Arc::clone(&value);
                 let cancel = Arc::clone(&cancel);
-                let serviced_count = Arc::new(AtomicU64::new(0));
-                let serviced_out = Arc::clone(&serviced_count);
+                let viz = viz.clone();
                 s.spawn(move || {
                     for _ in 0..CONTENTION_OPS {
                         if cancel.load(Ordering::Relaxed) {
                             break;
                         }
-                        *flag.lock() += 1;
-                        serviced_count.fetch_add(1, Ordering::Relaxed);
+                        let mut g = viz.lock(c + 1, &value);
+                        *g += 1;
+                        viz.level(u64::from(*g));
+                        drop(g);
+                        viz.fed(1);
+                        viz.pause(20);
                     }
+                    viz.set_state(c + 1, LaneState::Done);
                 });
-                serviced.push(serviced_out);
             }
         });
 
@@ -128,20 +181,11 @@ impl Example for HeldAcrossSyscallExample {
             return false;
         }
 
-        let spun = spins_seen
-            .iter()
-            .map(|c| c.load(Ordering::Relaxed))
-            .sum::<u64>();
-        let done = serviced
-            .iter()
-            .map(|c| c.load(Ordering::Relaxed))
-            .min()
-            .unwrap_or(0);
+        let total = *value.lock();
         out.line(format!(
-            "while the holder slept ~{}ms, the contenders spun {spun} times burning cores",
-            SLEEP_MS * HOLDS as u64
+            "holder released; final value = {total} (1 held + {CONTENDERS} contended + {} uncontended increments)",
+            CONTENDERS * CONTENTION_OPS
         ));
-        out.line(format!("holder released; contender serviced {done} times"));
 
         true
     }

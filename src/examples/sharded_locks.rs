@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::thread;
 
-use super::{Example, ExampleOutput};
+use super::{Example, ExampleOutput, LaneState, VizSpec};
 use crate::SpinLock;
 
 /// Eight independent `SpinLock<i64>` shards, addressed by key hash.
@@ -55,6 +55,18 @@ impl Example for ShardedLocksExample {
         // A global-lock baseline for contrast: the same keys, one lock.
         let global = Arc::new(SpinLock::new(0i64));
         let cancel = out.cancel().clone();
+        // The picture follows the shard locks: several threads can show
+        // HOLD at once, because each is inside a different shard.
+        let viz = out.visualise(VizSpec {
+            lock: "8 shard locks",
+            data: "updates applied",
+            capacity: None,
+            unit: "key updates",
+            target: (THREADS * OPS_PER_THREAD) as u64,
+            lanes: (1..=THREADS)
+                .map(|t| (format!("thread {t}"), OPS_PER_THREAD as u64))
+                .collect(),
+        });
 
         out.line("keys hash to 8 shards; each shard takes only its own spinlock");
         out.line(format!(
@@ -68,6 +80,7 @@ impl Example for ShardedLocksExample {
                 let shards = Arc::clone(&shards);
                 let global = Arc::clone(&global);
                 let cancel = Arc::clone(&cancel);
+                let viz = viz.clone();
                 s.spawn(move || {
                     for i in 0..OPS_PER_THREAD {
                         let key = t * OPS_PER_THREAD + i;
@@ -75,10 +88,16 @@ impl Example for ShardedLocksExample {
                             break;
                         }
                         // The shard path: only this key's shard is locked.
-                        *shards[key % SHARDS].lock() += 1;
+                        *viz.lock(t, &shards[key % SHARDS]) += 1;
                         // The contrast path: the same keys under one lock.
-                        *global.lock() += 1;
+                        let mut g = global.lock();
+                        *g += 1;
+                        viz.level(*g as u64);
+                        drop(g);
+                        viz.fed(1);
+                        viz.pause(10);
                     }
+                    viz.set_state(t, LaneState::Done);
                 });
             }
         });

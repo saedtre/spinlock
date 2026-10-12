@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 
-use super::{Example, ExampleOutput};
+use super::{Example, ExampleOutput, LaneState, VizSpec};
 use crate::SpinLock;
 
 /// A `HashMap` cache whose reads and the rare inserts share one spinlock.
@@ -53,6 +53,17 @@ impl Example for ReadMostlyCacheExample {
         let lookups = Arc::new(AtomicU64::new(0));
         let inserts = Arc::new(AtomicU64::new(0));
         let cancel = out.cancel().clone();
+        let viz = out.visualise(VizSpec {
+            lock: "cache lock",
+            data: "cache entries",
+            capacity: None,
+            unit: "lookups",
+            target: (THREADS * OPS_PER_THREAD) as u64,
+            lanes: (1..=THREADS)
+                .map(|t| (format!("reader {t}"), OPS_PER_THREAD as u64))
+                .collect(),
+        });
+        let gate = viz.gate(THREADS);
 
         out.line("one SpinLock<HashMap<String, u64>> for all reads and writes");
         out.line(format!("{THREADS} threads x {OPS_PER_THREAD} lookups; 2 one-off inserts"));
@@ -63,21 +74,33 @@ impl Example for ReadMostlyCacheExample {
                 let lookups = Arc::clone(&lookups);
                 let inserts = Arc::clone(&inserts);
                 let cancel = Arc::clone(&cancel);
+                let viz = viz.clone();
+                let gate = Arc::clone(&gate);
                 s.spawn(move || {
                     for j in 0..OPS_PER_THREAD {
-                        if j % 10 == 0 && cancel.load(Ordering::Relaxed) {
+                        if cancel.load(Ordering::Relaxed) {
                             break;
                         }
-                        let mut g = cache.lock();
+                        // In a paced run the readers do each lookup at the
+                        // same moment (see the pause below), as readers of a
+                        // busy cache would.
+                        gate.wait();
+                        // Even a pure read takes the one flag: readers queue
+                        // behind each other here, which an RwLock would avoid.
+                        let mut g = viz.lock(worker, &cache);
                         let key = if j % 2 == 0 { "hot" } else { "cold" };
                         let _hit = g.get(key).copied();
                         if j == 0 && worker < 2 {
                             g.insert(format!("k{worker}"), worker as u64);
                             inserts.fetch_add(1, Ordering::Relaxed);
                         }
+                        viz.level(g.len() as u64);
                         drop(g);
                         lookups.fetch_add(1, Ordering::Relaxed);
+                        viz.fed(1);
+                        viz.pause(5);
                     }
+                    viz.set_state(worker, LaneState::Done);
                 });
             }
         });
@@ -88,6 +111,10 @@ impl Example for ReadMostlyCacheExample {
         }
 
         let size = cache.lock().len();
+        let waits: u64 = viz.snapshot().lanes.iter().map(|l| l.busy).sum();
+        out.line(format!(
+            "readers found the lock busy {waits} times (an RwLock would let them overlap)"
+        ));
         out.line(format!("cache ended with {size} entries (2 inserts, the rest were misses)"));
         out.line(format!(
             "size = {size}, lookups = {}, inserts = {}",

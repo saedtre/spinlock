@@ -1,2 +1,4 @@
 /target
 .workflow/
+# Machine-specific linker/SDK settings (see "Build note" in README.md).
+/.cargo/config.toml

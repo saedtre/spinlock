@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use super::{Example, ExampleOutput};
+use super::{Example, ExampleOutput, LaneState, VizSpec};
 use crate::SpinLock;
 
 /// A fixed-capacity ring: pre-allocated slots, no heap growth, ever.
@@ -100,6 +100,18 @@ impl Example for BoundedRingBufferExample {
         let produced = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let consumed = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let cancel = out.cancel().clone();
+        const PRODUCER: usize = 0;
+        const CONSUMER: usize = 1;
+        let viz = out.visualise(VizSpec {
+            lock: "ring lock",
+            data: "ring",
+            capacity: Some(CAPACITY as u64),
+            unit: "items consumed",
+            target: ITEMS,
+            // Expected acquisitions are a floor: a full or empty ring costs
+            // extra visits to the lock.
+            lanes: vec![("producer".to_string(), ITEMS), ("consumer".to_string(), ITEMS)],
+        });
 
         out.line(format!(
             "fixed capacity {CAPACITY}: the ring never grows or allocates"
@@ -115,30 +127,43 @@ impl Example for BoundedRingBufferExample {
                 let consumed = Arc::clone(&consumed);
                 let produced = Arc::clone(&produced);
                 let cancel = Arc::clone(&cancel);
+                let viz = viz.clone();
                 s.spawn(move || {
+                    // One pop under the lock; the guard is gone on return.
+                    let pop = || {
+                        let mut r = viz.lock(CONSUMER, &ring);
+                        let popped = r.pop();
+                        viz.level(r.len() as u64);
+                        popped
+                    };
                     loop {
                         if cancel.load(Ordering::Relaxed) {
                             break;
                         }
                         // Bind the result first: a guard created in the
                         // `match` scrutinee would stay held across the arms.
-                        let popped = ring.lock().pop();
+                        let popped = pop();
                         match popped {
                             Some(_v) => {
                                 consumed.fetch_add(1, Ordering::Relaxed);
+                                viz.fed(1);
+                                viz.pause(3);
                             }
                             None => {
                                 // Empty: sleep briefly instead of burning a core.
                                 thread::sleep(Duration::from_micros(500));
+                                viz.pause(1);
                                 // Use consistent atomic ordering
                                 let produced_count = produced.load(Ordering::Relaxed);
                                 if produced_count >= ITEMS {
                                     // Drain whatever the producer finished with.
                                     loop {
-                                        let popped = ring.lock().pop();
+                                        let popped = pop();
                                         match popped {
                                             Some(_v) => {
                                                 consumed.fetch_add(1, Ordering::Relaxed);
+                                                viz.fed(1);
+                                                viz.pause(3);
                                             }
                                             None => break,
                                         }
@@ -148,6 +173,7 @@ impl Example for BoundedRingBufferExample {
                             }
                         }
                     }
+                    viz.set_state(CONSUMER, LaneState::Done);
                 });
             }
             // Producer: push into the ring, sleeping when it is full.
@@ -155,23 +181,33 @@ impl Example for BoundedRingBufferExample {
                 let ring = Arc::clone(&ring);
                 let produced = Arc::clone(&produced);
                 let cancel = Arc::clone(&cancel);
+                let viz = viz.clone();
                 s.spawn(move || {
                     for i in 0..ITEMS {
                         if cancel.load(Ordering::Relaxed) {
                             break;
                         }
                         loop {
-                            if ring.lock().push(i) {
+                            let pushed = {
+                                let mut r = viz.lock(PRODUCER, &ring);
+                                let pushed = r.push(i);
+                                viz.level(r.len() as u64);
+                                pushed
+                            };
+                            if pushed {
                                 produced.fetch_add(1, Ordering::Relaxed);
+                                viz.pause(2);
                                 break;
                             }
                             // Full: sleep briefly; the ring never reallocates.
                             thread::sleep(Duration::from_micros(200));
+                            viz.pause(1);
                             if cancel.load(Ordering::Relaxed) {
                                 break;
                             }
                         }
                     }
+                    viz.set_state(PRODUCER, LaneState::Done);
                 });
             }
         });

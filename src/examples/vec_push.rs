@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::thread;
 
-use super::{Example, ExampleOutput};
+use super::{Example, ExampleOutput, LaneState, VizSpec};
 use crate::SpinLock;
 
 /// The original `main()` smoke test, as a re-runnable example.
@@ -45,6 +45,14 @@ impl Example for VecPushExample {
         // Working state, reset on every run.
         let x = Arc::new(SpinLock::new(Vec::new()));
         let cancel = out.cancel().clone();
+        let viz = out.visualise(VizSpec {
+            lock: "vec lock",
+            data: "vec length",
+            capacity: None,
+            unit: "pushes",
+            target: 3,
+            lanes: vec![("pushes 1".to_string(), 1), ("pushes 2, 2".to_string(), 1)],
+        });
 
         out.line("two scoped threads push 1 and (2, 2) behind the lock");
 
@@ -52,22 +60,34 @@ impl Example for VecPushExample {
             s.spawn({
                 let x = Arc::clone(&x);
                 let cancel = Arc::clone(&cancel);
+                let viz = viz.clone();
                 move || {
+                    viz.pause(80);
                     if !cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                        x.lock().push(1);
+                        let mut g = viz.lock(0, &x);
+                        g.push(1);
+                        viz.level(g.len() as u64);
+                        viz.fed(1);
                     }
+                    viz.set_state(0, LaneState::Done);
                 }
             });
             s.spawn({
                 let x = Arc::clone(&x);
                 let cancel = Arc::clone(&cancel);
+                let viz = viz.clone();
                 move || {
+                    viz.pause(160);
                     if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                         return;
                     }
-                    let mut g = x.lock();
+                    let mut g = viz.lock(1, &x);
                     g.push(2);
                     g.push(2);
+                    viz.level(g.len() as u64);
+                    viz.fed(2);
+                    drop(g);
+                    viz.set_state(1, LaneState::Done);
                 }
             });
         });
@@ -79,9 +99,9 @@ impl Example for VecPushExample {
 
         let mut contents = x.lock().clone();
         contents.sort();
-        out.line(format!(
-            "note: a push that grows the Vec allocates in the section — a sleeping lock would fit better here"
-        ));
+        out.line(
+            "note: a push that grows the Vec allocates in the section — a sleeping lock would fit better here",
+        );
         out.line(format!("contents (sorted) = {contents:?}"));
 
         true

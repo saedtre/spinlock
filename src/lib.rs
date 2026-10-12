@@ -20,7 +20,8 @@
 
 pub mod examples;
 
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
+use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Release};
@@ -50,7 +51,7 @@ impl<T> SpinLock<T> {
         while self.locked.swap(true, Acquire) {
             std::hint::spin_loop();
         }
-        Guard { lock: self }
+        Guard::new(self)
     }
 
     /// Non-blocking probe: acquire the lock and return `Some(guard)` if it
@@ -64,7 +65,7 @@ impl<T> SpinLock<T> {
         if self.locked.swap(true, Acquire) {
             None
         } else {
-            Some(Guard { lock: self })
+            Some(Guard::new(self))
         }
     }
 
@@ -91,8 +92,44 @@ impl<T: Default> Default for SpinLock<T> {
 /// the critical section still runs `drop` and unlocks, so the lock is never
 /// stuck — but the guarded data may be left inconsistent with no signal to
 /// other threads.
+///
+/// A `&Guard` hands out `&T`, so a guard may only be shared between threads
+/// when `T: Sync` (the same rule as `std::sync::MutexGuard`). Sharing a guard
+/// over a `Send`-only type such as `Cell` is rejected at compile time:
+///
+/// ```compile_fail
+/// use std::cell::Cell;
+/// use spinlock::SpinLock;
+///
+/// let lock = SpinLock::new(Cell::new(0u64));
+/// let guard = lock.lock();
+/// std::thread::scope(|s| {
+///     // Two threads calling `Cell::set` through one `&Guard` would race.
+///     s.spawn(|| guard.set(guard.get() + 1));
+///     s.spawn(|| guard.set(guard.get() + 1));
+/// });
+/// ```
 pub struct Guard<'a, T> {
     lock: &'a SpinLock<T>,
+    /// `&SpinLock<T>` is `Sync` whenever `T: Send`, which would make the
+    /// guard `Sync` for types that are not. This marker removes the automatic
+    /// `Sync` (and leaves `Send` alone); the `unsafe impl` below puts it back
+    /// with the right bound.
+    _not_auto_sync: PhantomData<Cell<()>>,
+}
+
+// Safety: all a `&Guard<T>` gives another thread is `&T` (through `Deref`),
+// which is sound to share exactly when `T: Sync`.
+unsafe impl<T: Sync> Sync for Guard<'_, T> {}
+
+impl<'a, T> Guard<'a, T> {
+    /// Only called by `lock` / `try_lock`, after the flag has been taken.
+    fn new(lock: &'a SpinLock<T>) -> Self {
+        Guard {
+            lock,
+            _not_auto_sync: PhantomData,
+        }
+    }
 }
 
 impl<T> Deref for Guard<'_, T> {
@@ -173,6 +210,32 @@ mod tests {
         } // guard dropped here -> flag released
         assert!(x.try_lock().is_some());
         assert_eq!(*x.lock(), 7);
+    }
+
+    /// A guard can be shared between threads when the data is `Sync`, and
+    /// still be sent to another thread when the data is `Send`. (That a guard
+    /// over a non-`Sync` type is NOT `Sync` is checked by the `compile_fail`
+    /// doc-test on [`Guard`].)
+    #[test]
+    fn guard_is_sync_for_sync_data_and_send_for_send_data() {
+        fn assert_sync<G: Sync>(_: &G) {}
+        fn assert_send<G: Send>(_: &G) {}
+
+        let shared = SpinLock::new(vec![1u8, 2, 3]);
+        let guard = shared.lock();
+        assert_sync(&guard);
+        std::thread::scope(|s| {
+            s.spawn(|| assert_eq!(guard.len(), 3));
+            s.spawn(|| assert_eq!(guard[0], 1));
+        });
+        drop(guard);
+
+        let cell = SpinLock::new(std::cell::Cell::new(7u64));
+        let guard = cell.lock();
+        assert_send(&guard);
+        let seen = std::thread::scope(|s| s.spawn(move || guard.get()).join().unwrap());
+        assert_eq!(seen, 7);
+        assert!(cell.try_lock().is_some());
     }
 
     #[test]

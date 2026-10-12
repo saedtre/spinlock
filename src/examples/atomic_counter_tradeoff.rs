@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::thread;
 
-use super::{Example, ExampleOutput};
+use super::{Example, ExampleOutput, LaneState, VizSpec};
 use crate::SpinLock;
 
 /// A small multi-field stat block that must be updated as one unit.
@@ -57,31 +57,54 @@ impl Example for AtomicCounterTradeoffExample {
         let stats = Arc::new(SpinLock::new(Stats::default()));
         let atomic = Arc::new(AtomicI64::new(0));
         let cancel = out.cancel().clone();
+        let viz = out.visualise(VizSpec {
+            lock: "stats lock",
+            data: "hits + misses",
+            capacity: None,
+            unit: "lookups",
+            target: (THREADS * OPS_PER_THREAD) as u64,
+            lanes: (1..=THREADS)
+                .map(|t| (format!("thread {t}"), OPS_PER_THREAD as u64))
+                .collect(),
+        });
+        let gate = viz.gate(THREADS);
 
         out.line("SpinLock<Stats { hits, misses }> next to a plain AtomicI64");
         out.line(format!("{THREADS} threads x {OPS_PER_THREAD} lookups (alternating hit/miss)"));
 
         thread::scope(|s| {
-            for _ in 0..THREADS {
+            for lane in 0..THREADS {
                 let stats = Arc::clone(&stats);
                 let atomic = Arc::clone(&atomic);
                 let cancel = Arc::clone(&cancel);
+                let viz = viz.clone();
+                let gate = Arc::clone(&gate);
                 s.spawn(move || {
                     for i in 0..OPS_PER_THREAD {
-                        if i % 10 == 0 && cancel.load(Ordering::Relaxed) {
-                            break;
+                        if i % 10 == 0 {
+                            if cancel.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            // A paced run pauses here, then all the threads
+                            // carry on together so they still contend.
+                            viz.pause(5);
+                            gate.wait();
                         }
                         if i % 2 == 0 {
-                            let mut g = stats.lock();
+                            let mut g = viz.lock(lane, &stats);
                             g.hits += 1;
+                            viz.level((g.hits + g.misses) as u64);
                             drop(g);
                             // The atomic side never takes the lock at all.
                             atomic.fetch_add(1, Ordering::Relaxed);
                         } else {
-                            let mut g = stats.lock();
+                            let mut g = viz.lock(lane, &stats);
                             g.misses += 1;
+                            viz.level((g.hits + g.misses) as u64);
                         }
+                        viz.fed(1);
                     }
+                    viz.set_state(lane, LaneState::Done);
                 });
             }
         });

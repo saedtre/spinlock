@@ -41,6 +41,7 @@ impl Example for VecPushExample {
         Box::new(VecPushExample)
     }
 
+    // snippet:start
     fn run(&mut self, out: &mut ExampleOutput) -> bool {
         // Working state, reset on every run.
         let x = Arc::new(SpinLock::new(Vec::new()));

@@ -42,6 +42,7 @@ impl Example for ShardedLocksExample {
         Box::new(ShardedLocksExample)
     }
 
+    // snippet:start
     fn run(&mut self, out: &mut ExampleOutput) -> bool {
         const SHARDS: usize = 8;
         const THREADS: usize = 4;

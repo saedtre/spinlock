@@ -21,21 +21,28 @@ responsive; its output lines appear as they are written, not when it ends.
 
 | Key | Action |
 |---|---|
-| `Up` / `k` | Select the previous example (wraps) |
-| `Down` / `j` | Select the next example (wraps) |
+| `h` / `l` (or `Left` / `Right`) | Highlight the example list / the right-hand panel (does not wrap) |
+| `k` / `j` (or `Up` / `Down`) | On the highlighted pane: select the previous / next example (wraps) in the list, or scroll the right-hand panel up / down one row |
 | `Enter` / `r` | Run the selected example |
 | `c` | Toggle the right-hand panel between the explanation and the example's source code |
-| `PageUp` / `PageDown` | Scroll the right-hand panel |
 | `[` / `]` | Scroll the output pane back towards a run's first line / forward to its newest |
 | `q` / `Esc` | Quit (a run in progress is asked to cancel first) |
 
 `Ctrl-C` also quits. The terminal is restored on exit, including after a panic.
 
 When the explanation or the source is longer than its panel, the panel's
-bottom border says so (`rows 1-10 of 13 (PgUp/PgDn)`). The output pane does
+bottom border says so (`rows 1-10 of 13 (l, then j/k)`). The output pane does
 the same when a run has written more than fits
 (`lines 4-9 of 9 ([ back, ] forward)`); it follows the newest line until you
-scroll back.
+scroll back. The highlighted pane is the one drawn with a thick border: the
+list is highlighted at start-up, and `j` / `k` scroll the right-hand panel
+once it is highlighted with `l`. Each example keeps two scroll positions while
+the program runs, one for its explanation and one for its source, so moving to
+other examples or pressing `c` and coming back shows it where it was left.
+Until it is scrolled, the explanation starts at its first row and the source
+starts at the code the example demonstrates (the line under the
+`// snippet:start` comment in its file), with the rest of the file reachable
+by scrolling up.
 
 The TUI needs an interactive terminal. Started without one (from a script, or
 with its output piped) it prints a one-line message and exits with status 1.

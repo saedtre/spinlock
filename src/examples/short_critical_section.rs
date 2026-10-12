@@ -44,6 +44,7 @@ impl Example for ShortCriticalSectionExample {
         Box::new(ShortCriticalSectionExample)
     }
 
+    // snippet:start
     fn run(&mut self, out: &mut ExampleOutput) -> bool {
         const THREADS: usize = 2;
         const BATCHES: usize = 10;

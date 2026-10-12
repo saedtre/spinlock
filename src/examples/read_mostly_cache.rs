@@ -43,6 +43,7 @@ impl Example for ReadMostlyCacheExample {
         Box::new(ReadMostlyCacheExample)
     }
 
+    // snippet:start
     fn run(&mut self, out: &mut ExampleOutput) -> bool {
         const THREADS: usize = 4;
         const OPS_PER_THREAD: usize = 50;

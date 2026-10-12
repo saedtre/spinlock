@@ -46,6 +46,7 @@ impl Example for NoSleepContextExample {
         Box::new(NoSleepContextExample)
     }
 
+    // snippet:start
     fn run(&mut self, out: &mut ExampleOutput) -> bool {
         const ITEMS: usize = 50;
         const CONTEXTS: usize = 2;

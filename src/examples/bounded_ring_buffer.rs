@@ -12,6 +12,7 @@ use std::time::Duration;
 use super::{Example, ExampleOutput, LaneState, VizSpec};
 use crate::SpinLock;
 
+// snippet:start
 /// A fixed-capacity ring: pre-allocated slots, no heap growth, ever.
 ///
 /// Full/empty is tracked with an explicit `filled` count: with plain

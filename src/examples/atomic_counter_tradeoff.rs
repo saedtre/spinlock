@@ -11,6 +11,7 @@ use std::thread;
 use super::{Example, ExampleOutput, LaneState, VizSpec};
 use crate::SpinLock;
 
+// snippet:start
 /// A small multi-field stat block that must be updated as one unit.
 #[derive(Default)]
 struct Stats {

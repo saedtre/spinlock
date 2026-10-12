@@ -43,6 +43,7 @@ impl Example for TryLockFastPathExample {
         Box::new(TryLockFastPathExample)
     }
 
+    // snippet:start
     fn run(&mut self, out: &mut ExampleOutput) -> bool {
         const PROBERS: usize = 4;
         const PROBES: usize = 100;

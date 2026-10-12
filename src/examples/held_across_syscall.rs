@@ -47,6 +47,7 @@ impl Example for HeldAcrossSyscallExample {
         Box::new(HeldAcrossSyscallExample)
     }
 
+    // snippet:start
     fn run(&mut self, out: &mut ExampleOutput) -> bool {
         const HOLDS: usize = 5;
         const SLEEP_MS: u64 = 20;

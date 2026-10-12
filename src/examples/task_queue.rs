@@ -44,6 +44,7 @@ impl Example for TaskQueueExample {
         Box::new(TaskQueueExample)
     }
 
+    // snippet:start
     fn run(&mut self, out: &mut ExampleOutput) -> bool {
         const TASKS: usize = 100;
         const CONSUMERS: usize = 3;

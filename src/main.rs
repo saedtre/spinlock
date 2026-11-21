@@ -250,7 +250,10 @@ fn run_example(state: &mut AppState) {
     state.output = vec![if state.pace.is_zero() {
         format!("running: {} ...", example.name())
     } else {
-        format!("running: {} ... (slowed down so it can be watched)", example.name())
+        format!(
+            "running: {} ... (slowed down so it can be watched)",
+            example.name()
+        )
     }];
     state.output_scroll = 0;
     state.cancel = cancel;
@@ -344,7 +347,11 @@ fn snippet_start(code: &str) -> usize {
 fn ui(frame: &mut Frame, state: &mut AppState) -> io::Result<()> {
     let area = frame.area();
     let example = &state.examples[state.selected];
-    let picture = state.viz.as_ref().map(Viz::snapshot).filter(|p| !p.is_empty());
+    let picture = state
+        .viz
+        .as_ref()
+        .map(Viz::snapshot)
+        .filter(|p| !p.is_empty());
 
     // Heights: the picture gets exactly what it needs; the output pane half
     // of the rest once there is a run to report on (two fifths before that,
@@ -352,7 +359,11 @@ fn ui(frame: &mut Frame, state: &mut AppState) -> io::Result<()> {
     // list + explanation everything else.
     let viz_height = picture.as_ref().map_or(1, |p| p.lanes.len() as u16 + 2) + 2;
     let rest = area.height.saturating_sub(1 + viz_height);
-    let output_share = if picture.is_some() { rest / 2 } else { rest * 2 / 5 };
+    let output_share = if picture.is_some() {
+        rest / 2
+    } else {
+        rest * 2 / 5
+    };
     let output_height = output_share.clamp(5, 14);
     let [status_area, middle_area, viz_area, output_area] = Layout::vertical([
         Constraint::Length(1),
@@ -523,8 +534,12 @@ fn ui(frame: &mut Frame, state: &mut AppState) -> io::Result<()> {
                 // between are the lanes, coloured by what the thread is doing.
                 let style = match i.checked_sub(1).and_then(|lane| p.lanes.get(lane)) {
                     Some(lane) => match lane.state {
-                        LaneState::Holding => Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
-                        LaneState::Spinning => Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        LaneState::Holding => {
+                            Style::new().fg(Color::Green).add_modifier(Modifier::BOLD)
+                        }
+                        LaneState::Spinning => {
+                            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                        }
                         LaneState::Done => Style::new().add_modifier(Modifier::DIM),
                         LaneState::Idle => Style::new(),
                     },
@@ -811,7 +826,10 @@ mod tests {
                 draw(&mut state, 80, 24);
             }
             let end = draw(&mut state, 80, 24).join("\n");
-            assert!(end.contains(rows.last().unwrap().as_str()), "example {i}:\n{end}");
+            assert!(
+                end.contains(rows.last().unwrap().as_str()),
+                "example {i}:\n{end}"
+            );
             assert_eq!(state.panel_top > 0, needs_scroll);
             // ...and back to the top again.
             for _ in 0..rows.len() {
@@ -850,14 +868,24 @@ mod tests {
             for _ in 0..rows.len() {
                 state.handle_key(key(KeyCode::Char('[')));
                 let screen = draw(&mut state, 80, 24).join("\n");
-                assert_eq!(screen.contains("([ back, ] forward)"), scrolls, "example {i}");
+                assert_eq!(
+                    screen.contains("([ back, ] forward)"),
+                    scrolls,
+                    "example {i}"
+                );
                 seen.push_str(&screen);
             }
             for row in &rows {
-                assert!(seen.contains(row.as_str()), "example {i}: never shown: {row:?}");
+                assert!(
+                    seen.contains(row.as_str()),
+                    "example {i}: never shown: {row:?}"
+                );
             }
             // Scrolled right back, the pane starts at the run's first line.
-            assert_eq!(state.output_scroll, rows.len().saturating_sub(state.output_rows));
+            assert_eq!(
+                state.output_scroll,
+                rows.len().saturating_sub(state.output_rows)
+            );
             let top = draw(&mut state, 80, 24).join("\n");
             assert!(top.contains(rows[0].as_str()), "example {i}:\n{top}");
 
@@ -917,7 +945,10 @@ mod tests {
             assert_eq!(joined, "alphabetagammadeltaaveryveryverylongwordend");
         }
         assert_eq!(wrap_words("one two three", 7), ["one two", "three"]);
-        assert_eq!(wrap_code("    let x = 1;\n\nab", 8), ["    let ", "x = 1;", "", "ab"]);
+        assert_eq!(
+            wrap_code("    let x = 1;\n\nab", 8),
+            ["    let ", "x = 1;", "", "ab"]
+        );
     }
 
     /// AC-1, AC-2, AC-3, AC-4: the list is highlighted at start-up, `l` and
@@ -1003,7 +1034,8 @@ mod tests {
     /// that is the marker and nothing else.
     #[test]
     fn snippet_start_is_the_line_after_the_first_marker() {
-        let text = "// one\n// two\n    // snippet:start\nlet a = 1;\n// snippet:start\nlet b = 2;\n";
+        let text =
+            "// one\n// two\n    // snippet:start\nlet a = 1;\n// snippet:start\nlet b = 2;\n";
         let start = snippet_start(text);
         assert_eq!(start, text.find("let a").unwrap());
         assert!(text[start..].starts_with("let a = 1;\n"));
@@ -1060,7 +1092,11 @@ mod tests {
             let expected = marker_row + 1;
             assert_eq!(state.panel_top, expected, "example {i}");
             assert!(state.panel_top > 0, "example {i}");
-            assert!(screen[2].contains(rows[expected].as_str()), "example {i}: {:?}", screen[2]);
+            assert!(
+                screen[2].contains(rows[expected].as_str()),
+                "example {i}: {:?}",
+                screen[2]
+            );
             assert!(!screen.join("\n").contains(SNIPPET_MARKER), "example {i}");
             assert!(state.positions.iter().all(|pair| *pair == [None, None]));
             tops.push(state.panel_top);
@@ -1355,7 +1391,10 @@ mod tests {
 
             draw(&mut state, 80, 24);
             state.handle_key(key(KeyCode::Char('[')));
-            assert_eq!(state.output_scroll, state.output_rows.saturating_sub(1).max(1));
+            assert_eq!(
+                state.output_scroll,
+                state.output_rows.saturating_sub(1).max(1)
+            );
             same_pane(&state);
             state.handle_key(key(KeyCode::Char(']')));
             assert_eq!(state.output_scroll, 0);
@@ -1435,7 +1474,12 @@ mod tests {
                 state.handle_key(key(KeyCode::Char(code)));
                 draw(&mut state, 80, 24);
             }
-            let stored = state.positions.iter().flatten().filter(|p| p.is_some()).count();
+            let stored = state
+                .positions
+                .iter()
+                .flatten()
+                .filter(|p| p.is_some())
+                .count();
             assert_eq!(stored, 2);
             assert!(state.positions[0][1].is_some() && state.positions[1][1].is_some());
         }
@@ -1698,7 +1742,9 @@ mod tests {
             for y in 2..2 + state.panel_rows {
                 for x in left..left + inner {
                     assert!(
-                        !buffer[(x as u16, y as u16)].modifier.contains(Modifier::DIM),
+                        !buffer[(x as u16, y as u16)]
+                            .modifier
+                            .contains(Modifier::DIM),
                         "example {i} cell ({x}, {y})"
                     );
                 }
